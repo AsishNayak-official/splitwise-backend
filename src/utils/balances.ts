@@ -15,7 +15,7 @@ export async function computeNetBalancesForUser(
   if (groupId) expenseQuery.group = groupId;
 
   const settlementQuery: any = {};
-  if (groupId) settlementQuery.group = groupId;
+  if (groupId) {settlementQuery.group = groupId;}
 
   const [expenses, settlements] = await Promise.all([
     Expense.find(expenseQuery).lean(),

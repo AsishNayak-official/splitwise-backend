@@ -3,6 +3,7 @@ import { Activity } from '../models/Activity';
 import { Settlement } from '../models/Settlement';
 import { AuthRequest } from '../types/express';
 import { computeNetBalancesForUser } from '../utils/balances';
+import { Group } from '../models/Group';
 
 async function createSettlement(opts: {
   from: string;
@@ -17,7 +18,7 @@ async function createSettlement(opts: {
     to: opts.to,
     group: opts.group ?? null,
     amount: opts.amount,
-    method: opts.method
+    method: opts.method,
   });
 
   await Activity.create({
@@ -26,7 +27,7 @@ async function createSettlement(opts: {
     actor: opts.actor,
     amount: opts.amount,
     description: 'Settlement between users',
-    settlement: settlement._id
+    settlement: settlement._id,
   });
 
   return settlement;
@@ -35,86 +36,156 @@ async function createSettlement(opts: {
 async function getNetBetween(
   userA: string,
   userB: string,
-  groupId: string | null
+  groupId: string | null,
 ): Promise<number> {
   const netMap = await computeNetBalancesForUser(userA, groupId);
   return netMap[userB] ?? 0;
 }
 
-export const payFriendAllGroups = async (req: AuthRequest, res: Response) => {
+export const multiplePayment = async (req: AuthRequest, res: Response) => {
   try {
     const me = req.userId!;
     const friendId = req.params.friendId;
 
     const net = await getNetBetween(me, friendId, null); // >0 I owe friend
     if (net <= 0) {
-      return res.status(400).json({ message: 'You do not owe this friend overall.' });
+      return res
+        .status(400)
+        .json({ message: 'You do not owe this friend overall.' });
     }
 
-    const settlement = await createSettlement({
-      from: me,
-      to: friendId,
-      group: null,
-      amount: net,
-      method: 'upi',
-      actor: me
-    });
+    const groups = await Group.find({
+      members: { $all: [me, friendId] },
+    })
+      .select('_id name')
+      .lean();
 
-    res.status(201).json(settlement);
+    console.log({ groups });
+
+    if (!groups.length) {
+      return res.json({
+        message:
+          'You have no shared groups with this friend. Nothing to settle.',
+      });
+    }
+
+    let settlements: any[] = [];
+
+    for (const g of groups) {
+      const settlement = await singlePaymentHandler(
+        me,
+        friendId,
+        g._id.toString(),
+      );
+      if (settlement) settlements.push(settlement);
+    }
+    const finalNet = await getNetBetween(me, friendId, null);
+    let overallSettlement = null;
+    if (finalNet > 0) {
+      overallSettlement = await createSettlement({
+        from: me,
+        to: friendId,
+        group: null, // Global settlement
+        amount: finalNet, // Amount is the REMAINING balance
+        method: 'upi',
+        actor: me,
+      });
+      settlements.push(overallSettlement);
+    }
+
+    res.status(201).json({
+      message: overallSettlement
+        ? 'Overall and group debts settled.'
+        : 'Group debts settled, no remaining overall debt.',
+      settlements,
+    });
   } catch (err) {
     console.error(err);
     res.status(500).json({ message: 'Failed to create settlement' });
   }
 };
 
-export const receiveFromFriendAllGroups = async (req: AuthRequest, res: Response) => {
+export const multipleMarkAsReceived = async (
+  req: AuthRequest,
+  res: Response,
+) => {
   try {
     const me = req.userId!;
     const friendId = req.params.friendId;
 
     const net = await getNetBetween(friendId, me, null); // friend owes me
     if (net <= 0) {
-      return res.status(400).json({ message: 'Friend does not owe you overall.' });
+      return res
+        .status(400)
+        .json({ message: 'Friend does not owe you overall.' });
     }
 
-    const settlement = await createSettlement({
-      from: friendId,
-      to: me,
-      group: null,
-      amount: net,
-      method: 'upi',
-      actor: me
-    });
+    const groups = await Group.find({
+      members: { $all: [me, friendId] },
+    })
+      .select('_id name')
+      .lean();
 
-    res.status(201).json(settlement);
+    console.log({ groups });
+
+    if (!groups.length) {
+      return res.json({
+        message:
+          'You have no shared groups with this friend. Nothing to settle.',
+      });
+    }
+
+    let settlements: any[] = [];
+
+    for (const g of groups) {
+      const settlement = await markAsReceivedHandler(
+        me,
+        friendId,
+        g._id.toString(),
+      );
+      if (settlement) settlements.push(settlement);
+    }
+    const finalNet = await getNetBetween(friendId, me, null);
+    let overallSettlement = null;
+
+    if (finalNet > 0) {
+      overallSettlement = await createSettlement({
+        from: friendId, // Friend pays
+        to: me, // I receive
+        group: null,
+        amount: finalNet,
+        method: 'upi',
+        actor: me,
+      });
+      settlements.push(overallSettlement);
+    }
+
+    res.status(201).json({
+      message: overallSettlement
+        ? 'Overall and group debts marked as received.'
+        : 'Group debts marked as received, no remaining overall debt.',
+      settlements,
+    });
   } catch (err) {
     console.error(err);
     res.status(500).json({ message: 'Failed to create settlement' });
   }
 };
 
-export const payFriendInGroup = async (req: AuthRequest, res: Response) => {
+export const singlePayment = async (req: AuthRequest, res: Response) => {
   try {
     const me = req.userId!;
     const friendId = req.params.friendId;
     const groupId = req.params.groupId;
 
-    const net = await getNetBetween(me, friendId, groupId);
-    if (net <= 0) {
+    const settlement = await singlePaymentHandler(me, friendId, groupId);
+
+    if (!settlement) {
       return res
         .status(400)
         .json({ message: 'You do not owe this friend in this group.' });
     }
 
-    const settlement = await createSettlement({
-      from: me,
-      to: friendId,
-      group: groupId,
-      amount: net,
-      method: 'upi',
-      actor: me
-    });
-
     res.status(201).json(settlement);
   } catch (err) {
     console.error(err);
@@ -122,27 +193,64 @@ export const payFriendInGroup = async (req: AuthRequest, res: Response) => {
   }
 };
 
-export const receiveFriendInGroup = async (req: AuthRequest, res: Response) => {
+export const singlePaymentHandler = async (
+  userId: string,
+  friendId: string,
+  groupId: string,
+  method: string = 'upi',
+) => {
+  const net = await getNetBetween(userId, friendId, groupId);
+  if (net <= 0) {
+    return null;
+  }
+
+  const settlement = await createSettlement({
+    from: userId,
+    to: friendId,
+    group: groupId,
+    amount: net,
+    method: 'upi',
+    actor: userId,
+  });
+
+  return settlement;
+};
+export const markAsReceivedHandler = async (
+  userId: string,
+  friendId: string,
+  groupId: string,
+  method: string = 'upi',
+) => {
+  const net = await getNetBetween(friendId, userId, groupId);
+  if (net <= 0) {
+    return null;
+  }
+
+  const settlement = await createSettlement({
+    from: friendId,
+    to: userId,
+    group: groupId,
+    amount: net,
+    method: 'upi',
+    actor: userId,
+  });
+
+  return settlement;
+};
+
+export const singleMarkAsReceived = async (req: AuthRequest, res: Response) => {
   try {
     const me = req.userId!;
     const friendId = req.params.friendId;
     const groupId = req.params.groupId;
 
-    const net = await getNetBetween(friendId, me, groupId); // friend owes me in group
-    if (net <= 0) {
+    const settlement = await markAsReceivedHandler(me,friendId, groupId);
+
+    if (!settlement) {
       return res
         .status(400)
-        .json({ message: 'Friend does not owe you in this group.' });
+        .json({ message: 'You do not owe this friend in this group.' });
     }
-
-    const settlement = await createSettlement({
-      from: friendId,
-      to: me,
-      group: groupId,
-      amount: net,
-      method: 'upi',
-      actor: me
-    });
 
     res.status(201).json(settlement);
   } catch (err) {

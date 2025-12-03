@@ -4,6 +4,7 @@ import { Group } from '../models/Group';
 import { User } from '../models/User';
 import { AuthRequest } from '../types/express';
 import { computeNetBalancesForUser } from '../utils/balances';
+import { Settlement } from '../models/Settlement';
 
 export const listGroupsForUser = async (req: AuthRequest, res: Response) => {
   try {
@@ -67,7 +68,41 @@ export const getGroupDetail = async (req: AuthRequest, res: Response) => {
       .populate('paidBy', 'name')
       .lean();
 
-    res.json({ group, youOwe, youAreOwed, expenses });
+      const settlements = await Settlement.find({ group: groupId })
+      .sort({ createdAt: -1 })
+      .populate("from", "name")
+      .populate("to", "name")
+      .lean();
+
+    const settlementAsExpenses = settlements.map((s: any) => ({
+      _id: s._id,
+      group: s.group,
+      description: `Settlement with ${s.to?.name ?? ""}`,
+      totalAmount: s.amount,
+      paidBy: {
+        _id: s.from?._id ?? s.from,
+        name: s.from?.name ?? "You",
+      },
+      participants: [
+        {
+          user: s.to?._id ?? s.to,
+          share: s.amount,
+        },
+      ],
+      date: s.createdAt,
+      createdAt: s.createdAt,
+      updatedAt: s.updatedAt,
+      __v: s.__v,
+      // optional type flag if frontend needs to differentiate:
+      type: "settlement" as const,
+    }));
+
+    // 3) merge & sort by date desc, but keep key name `expenses`
+    const history = [...expenses, ...settlementAsExpenses].sort(
+      (a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()
+    );
+
+    res.json({ group, youOwe, youAreOwed, history });
   } catch (err) {
     console.error(err);
     res.status(500).json({ message: 'Failed to load group' });

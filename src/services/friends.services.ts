@@ -73,7 +73,7 @@ export const listFriends = async (req: AuthRequest, res: Response) => {
           email: friend.email,
           upiId: friend.upiId,
           youOwe: net > 0 ? net : 0,
-          owesYou: net < 0 ? -net : 0,
+          youAreOwed: net < 0 ? -net : 0,
           lastActivityAt: lastActivity?.createdAt ?? null,
         };
       }),

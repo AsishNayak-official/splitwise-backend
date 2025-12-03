@@ -16,7 +16,7 @@ function createToken(user: IUser): string {
       upiId: user.upiId,
     },
     JWT_SECRET,
-    { expiresIn: JWT_EXPIRES_IN }
+    { expiresIn: JWT_EXPIRES_IN },
   );
 }
 
@@ -87,6 +87,14 @@ export const login = async (req: Request, res: Response) => {
 
     const token = createToken(user);
 
+    //  res.cookie('auth_token', token, {
+    //   httpOnly: true,
+    //   secure: process.env.NODE_ENV === 'production',
+    //   sameSite: 'lax',
+    //   path: '/',
+    //   maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
+    // });
+
     res.json({
       token,
       user: {
@@ -117,5 +125,20 @@ export const me = async (req: AuthRequest, res: Response) => {
   } catch (err) {
     console.error(err);
     res.status(500).json({ message: 'Failed to fetch user' });
+  }
+};
+
+export const logout = async (req: AuthRequest, res: Response) => {
+  try {
+    if (!req.userId) {
+      return res.status(401).json({ message: 'Unauthorized' });
+    }
+    return res.status(200).json({
+      success: true,
+      message: 'Logged out successfully. Remove token client-side.',
+    });
+  } catch (err) {
+    console.error(err);
+    return res.status(500).json({ message: 'Logout failed' });
   }
 };

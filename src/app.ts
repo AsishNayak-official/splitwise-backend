@@ -25,7 +25,7 @@ function App(params: IApp): Express {
     cors({
       origin: 'http://localhost:3000', // replace with your frontend origin
       methods: ['GET', 'POST', 'PUT', 'PATCH'],
-      credentials: false,
+      credentials: true,
     }),
   );
   
